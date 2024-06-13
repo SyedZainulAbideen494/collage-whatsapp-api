@@ -165,7 +165,7 @@ app.post('/clg/webhook', (req, res) => {
               type: "text",
               text: { body: "Thank you for raising the issue." }
           });
-      } else if (messageBody === 'call support') {
+      } else if (messageBody === 'call') {
           sendWhatsAppMessage({
               messaging_product: "whatsapp",
               to: senderId,
