@@ -148,6 +148,8 @@ app.post('/clg/webhook', (req, res) => {
             }
           });
         } else if (messageBody === 'cafeteria') {
+          // Clear previous items and initialize new order
+          userState.data.items = [];
           userState.step = 10;
           sendWhatsAppMessage({
             messaging_product: "whatsapp",
@@ -301,10 +303,10 @@ app.post('/clg/webhook', (req, res) => {
                 sendWhatsAppMessage({
                   messaging_product: "whatsapp",
                   to: senderId,
-                  type: "image",
-                  image: {
-                    link: `${DOCUMENT_URL}${mediaFileName}`,
-                    caption: `Thank you! We've received your details:\nEducation Level: ${educationLevel}\nRoll Number: ${rollNumber}\nDocument Type: ${documentType}`
+                  type: "document",
+                  document: {
+                    link: `${BASE_URL}/documents/${mediaFileName}`,
+                    caption: `${documentType} for ${rollNumber}`
                   }
                 });
               } else {
@@ -312,24 +314,25 @@ app.post('/clg/webhook', (req, res) => {
                   messaging_product: "whatsapp",
                   to: senderId,
                   type: "text",
-                  text: { body: "No documents found for the provided details." }
+                  text: { body: "Sorry, no documents found for the provided details." }
                 });
               }
             }
           );
-        } else {
-          sendWhatsAppMessage({
-            messaging_product: "whatsapp",
-            to: senderId,
-            type: "text",
-            text: { body: "Sorry, I didn't understand that. Please type 'hi' for assistance." }
-          });
         }
+      } else {
+        sendWhatsAppMessage({
+          messaging_product: "whatsapp",
+          to: senderId,
+          type: "text",
+          text: { body: "Sorry, I didn't understand that. Please type 'hi' to start." }
+        });
       }
     }
+
     res.sendStatus(200);
   } catch (error) {
-    console.error('Error processing the webhook:', error);
+    console.error('Error handling webhook request:', error);
     res.sendStatus(500);
   }
 });
