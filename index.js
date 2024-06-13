@@ -19,9 +19,10 @@ const stripe = require('stripe')('sk_test_51LoS3iSGyKMMAZwstPlmLCEi1eBUy7MsjYxiK
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const QRCode = require('qrcode');
 const fs = require('fs');
+require("dotenv").config()
 
 // URL Constants
-const BASE_URL = 'https://1abdf4518b74567158cc2a6b226bb79f.serveo.net';
+const BASE_URL = process.env.BASE_URL;
 const SUCCESS_URL = `${BASE_URL}/success?session_id={CHECKOUT_SESSION_ID}&sender_id=`;
 const CANCEL_URL = `${BASE_URL}/cancel`;
 const TICKET_URL = `${BASE_URL}/tickets/`;
