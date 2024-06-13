@@ -136,7 +136,43 @@ app.post('/clg/webhook', (req, res) => {
             type: "text",
             text: { body: "Please fill out the admission form using the following link:\nhttps://example.com/admission-form" }
           });
-        } else if (messageBody === 'documents') {
+        } else if (messageBody === 'support') {
+          userState.step = 1;
+          sendWhatsAppMessage({
+              messaging_product: "whatsapp",
+              to: senderId,
+              type: "template",
+              template: {
+                  name: "college_support_temp",
+                  language: { code: "en_US" }
+              }
+          });
+      } else if (messageBody === 'raise an issue') {
+          userState.step = 20;
+          sendWhatsAppMessage({
+              messaging_product: "whatsapp",
+              to: senderId,
+              type: "text",
+              text: { body: "Please describe the issue you are facing." }
+          });
+      } else if (userState.step === 20) {
+          const issueDescription = messageBody;
+          // Here you can save the issue to a database or handle it accordingly.
+          userState.step = 0;
+          sendWhatsAppMessage({
+              messaging_product: "whatsapp",
+              to: senderId,
+              type: "text",
+              text: { body: "Thank you for raising the issue." }
+          });
+      } else if (messageBody === 'call support') {
+          sendWhatsAppMessage({
+              messaging_product: "whatsapp",
+              to: senderId,
+              type: "text",
+              text: { body: "You can reach our support team at +1234567890." }
+          });
+      } else if (messageBody === 'documents') {
           userState.step = 1;
           sendWhatsAppMessage({
             messaging_product: "whatsapp",
