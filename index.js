@@ -147,7 +147,7 @@ app.post('/clg/webhook', (req, res) => {
                   language: { code: "en_US" }
               }
           });
-      } else if (messageBody === 'raise an issue') {
+      } else if (messageBody === 'raise issue') {
           userState.step = 20;
           sendWhatsAppMessage({
               messaging_product: "whatsapp",
