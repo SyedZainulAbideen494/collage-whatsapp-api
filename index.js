@@ -202,8 +202,11 @@ app.post('/clg/webhook', (req, res) => {
           sendWhatsAppMessage({
             messaging_product: "whatsapp",
             to: senderId,
-            type: "text",
-            text: { body: `You selected ${messageBody}. Please enter the quantity.` }
+            type: "template",
+            template: {
+              name: "select_cafetria_quanitity",
+              language: { code: "en_US" }
+            }
           });
         } else if (userState.step === 11) {
           const quantity = parseInt(messageBody);
