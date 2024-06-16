@@ -11,7 +11,7 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const nodemailer = require('nodemailer');
-const uuid = require('uuid');
+const { v4: uuidv4 } = require('uuid');  // For generating unique filenames
 const cron = require('node-cron');
 const PORT = process.env.PORT || 8080;
 const axios = require('axios');
@@ -22,16 +22,33 @@ const fs = require('fs');
 require("dotenv").config()
 
 // URL Constants
-const BASE_URL = process.env.BASE_URL;
+const BASE_URL = 'https://9cff1d240aff90bf5e30c6baac008fe4.serveo.net';
 const SUCCESS_URL = `${BASE_URL}/success?session_id={CHECKOUT_SESSION_ID}&sender_id=`;
 const CANCEL_URL = `${BASE_URL}/cancel`;
 const TICKET_URL = `${BASE_URL}/tickets/`;
 const DOCUMENT_URL = `${BASE_URL}/documents/`;
 
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'public/fest');  // Specify the directory where fest images will be stored
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = uuidv4();  // Generate a unique identifier for the filename
+    cb(null, `${uniqueSuffix}-${file.originalname}`);  // Use unique identifier + original filename
+  }
+});
+
+const upload = multer({ storage: storage });
+
+// Middleware
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(cookieParser());
-
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "DELETE", "PUT"],
+  credentials: true,
+}));
 app.use(session({
   key: "userId",
   secret: "Englishps4",
@@ -42,17 +59,12 @@ app.use(session({
   },
 }));
 
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "DELETE", "PUT"],
-  credentials: true,
-}));
-
 // Serve static files from the 'public' directory
 app.use(express.static(path.join(__dirname, 'public')));
 
+// MySQL connection
 const connection = mysql.createPool({
-  connectionLimit: 10, // Maximum number of connections in the pool
+  connectionLimit: 10,
   host: "localhost",
   user: "root",
   password: "Englishps#4",
@@ -69,7 +81,7 @@ connection.getConnection((err) => {
 
 const userStates = {};
 
-app.post('/clg/webhook', (req, res) => {
+app.post('/webhook', (req, res) => {
   console.log('Incoming POST request:', JSON.stringify(req.body, null, 2));
 
   try {
@@ -97,39 +109,103 @@ app.post('/clg/webhook', (req, res) => {
               language: { code: "en_US" }
             }
           });
-        } else if (messageBody === 'fest') {
-          stripe.checkout.sessions.create({
-            payment_method_types: ['card'],
-            line_items: [{
-              price_data: {
-                currency: 'inr',
-                product_data: { name: 'Fest Ticket' },
-                unit_amount: 80000,
-              },
-              quantity: 1,
-            }],
-            mode: 'payment',
-            success_url: `${SUCCESS_URL}${senderId}`,
-            cancel_url: CANCEL_URL,
-          }).then(session => {
-            sendWhatsAppMessage({
-              messaging_product: "whatsapp",
-              to: senderId,
-              type: "text",
-              text: {
-                body: `Please complete your payment using the following link:\n${session.url}`
-              }
-            });
-          }).catch(err => {
-            console.error('Error creating Stripe session:', err);
-            sendWhatsAppMessage({
-              messaging_product: "whatsapp",
-              to: senderId,
-              type: "text",
-              text: { body: "Sorry, there was an error processing your payment. Please try again later." }
-            });
+        }else if (messageBody === 'fest') {
+          // Query to fetch all active fests
+          const query = 'SELECT * FROM fest WHERE active = 1';
+        
+          connection.query(query, async (err, results) => { // <-- Mark the function as async here
+            if (err) {
+              console.error('Error fetching fest details from MySQL:', err);
+              sendWhatsAppMessage({
+                messaging_product: "whatsapp",
+                to: senderId,
+                type: "text",
+                text: { body: "Sorry, there was an error processing your request. Please try again later." }
+              });
+              return;
+            }
+        
+            if (results.length === 0) {
+              // No active fest found
+              sendWhatsAppMessage({
+                messaging_product: "whatsapp",
+                to: senderId,
+                type: "text",
+                text: { body: "Sorry, there is no active fest currently." }
+              });
+              return;
+            }
+        
+            // Assuming there is at least one active fest, you can process the first one
+            const activeFest = results[0];
+        
+            // Example: Creating a Stripe session (modify as per your Stripe integration)
+            try {
+              const session = await stripe.checkout.sessions.create({
+                payment_method_types: ['card'],
+                line_items: [{
+                  price_data: {
+                    currency: 'inr',
+                    product_data: {
+                      name: activeFest.fest_name,
+                      description: activeFest.description,
+                    },
+                    unit_amount: activeFest.amount * 100, // Stripe expects amount in smallest currency unit (cents)
+                  },
+                  quantity: 1,
+                }],
+                mode: 'payment',
+                success_url: `${SUCCESS_URL}${senderId}`,
+                cancel_url: CANCEL_URL,
+              });
+        
+              // Set user state to 'fest' and include the fest_id
+              userStates[senderId] = { type: 'fest', festId: activeFest.fest_id };
+        
+              // Construct the festival image URL
+              const festImageUrl = `${BASE_URL}/fest/${activeFest.fest_image}`;
+        
+              // Send WhatsApp message with festival image
+              await sendWhatsAppMessage({
+                messaging_product: "whatsapp",
+                to: senderId,
+                recipient_type: "individual",
+                type: "image",
+                image: {
+                  link: festImageUrl
+                }
+              });
+        
+              // Send WhatsApp message with payment link and fest details
+              await sendWhatsAppMessage({
+                messaging_product: "whatsapp",
+                to: senderId,
+                type: "text",
+                text: {
+                  body: `*Festival Details* \n\n` +
+                        `*Name:* ${activeFest.fest_name}\n` +
+                        `*Description:* ${activeFest.description}\n` +
+                        `*Date:* ${activeFest.start_date.toISOString().slice(0, 10)}\n` +
+                        `*Time:* ${activeFest.start_date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}\n` +
+                        `*Price:* ₹${activeFest.amount}\n\n` +
+                        `*Payment Link* \n` +
+                        `${session.url}`
+                }
+              });
+        
+            } catch (error) {
+              console.error('Error creating Stripe session or sending WhatsApp message:', error);
+        
+              // Send an error message to WhatsApp
+              sendWhatsAppMessage({
+                messaging_product: "whatsapp",
+                to: senderId,
+                type: "text",
+                text: { body: "Sorry, there was an error processing your request. Please try again later." }
+              });
+            }
           });
-        } else if (messageBody === 'admission form') {
+        }else if (messageBody === 'admission form') {
           sendWhatsAppMessage({
             messaging_product: "whatsapp",
             to: senderId,
@@ -184,6 +260,11 @@ app.post('/clg/webhook', (req, res) => {
             }
           });
         } else if (messageBody === 'cafeteria') {
+          // Initialize userState.data if it doesn't exist
+          if (!userState.data) {
+            userState.data = {};
+          }
+        
           // Clear previous items and initialize new order
           userState.data.items = [];
           userState.step = 10;
@@ -196,7 +277,7 @@ app.post('/clg/webhook', (req, res) => {
               language: { code: "en_US" }
             }
           });
-        } else if (userState.step === 10 && (messageBody === 'tea' || messageBody === 'coffee' || messageBody === 'bread')) {
+        }else if (userState.step === 10 && (messageBody === 'tea' || messageBody === 'coffee' || messageBody === 'bread')) {
           userState.selectedItem = messageBody;
           userState.step = 11;
           sendWhatsAppMessage({
@@ -263,8 +344,8 @@ app.post('/clg/webhook', (req, res) => {
             success_url: `${SUCCESS_URL}${senderId}`,
             cancel_url: CANCEL_URL,
           }).then(session => {
-            userState.sessionId = session.id;
-            userState.type = 'cafeteria';
+            userStates[senderId].sessionId = session.id;
+            userStates[senderId].type = 'cafeteria';
             sendWhatsAppMessage({
               messaging_product: "whatsapp",
               to: senderId,
@@ -280,14 +361,14 @@ app.post('/clg/webhook', (req, res) => {
               text: { body: "Sorry, there was an error processing your payment. Please try again later." }
             });
           });
-        } else if (userState.step === 1) {
+        }  else if (userState.step === 1) {
           if (messageBody.toLowerCase() === 'fee receipts' || messageBody === '1') {
             userState.data.documentType = 'Fee Receipts';
           } else if (messageBody.toLowerCase() === 'results' || messageBody === '2') {
             userState.data.documentType = 'Results';
           } else if (messageBody.toLowerCase() === 'id card' || messageBody === '3') {
             userState.data.documentType = 'ID Card';
-          } else {
+          }  else {
             sendWhatsAppMessage({
               messaging_product: "whatsapp",
               to: senderId,
@@ -376,7 +457,7 @@ app.post('/clg/webhook', (req, res) => {
   }
 });
 
-app.get('/clg/success', async (req, res) => {
+app.get('/success', async (req, res) => {
   const sessionId = req.query.session_id;
   const senderId = req.query.sender_id;
 
@@ -390,13 +471,15 @@ app.get('/clg/success', async (req, res) => {
 
 async function handlePaymentSuccess(sessionId, senderId) {
   try {
+    console.log('Retrieving session:', sessionId);
     const session = await stripe.checkout.sessions.retrieve(sessionId);
     if (!session) {
       throw new Error('Session not found');
     }
+    console.log('Session retrieved:', session);
 
-    const ticketDetails = {
-      ticketId: session.id,
+    const receiptDetails = {
+      receiptId: session.id,
       amount: session.amount_total,
       currency: session.currency,
       customerEmail: session.customer_details.email,
@@ -404,10 +487,17 @@ async function handlePaymentSuccess(sessionId, senderId) {
     };
 
     if (userStates[senderId].type === 'fest') {
-      await connection.execute('INSERT INTO fest_ticket (ticket_id, amount, currency, customer_email, sender_id) VALUES (?, ?, ?, ?, ?)', [ticketDetails.ticketId, ticketDetails.amount, ticketDetails.currency, ticketDetails.customerEmail, ticketDetails.senderId]);
+      const festId = userStates[senderId].festId;
+      console.log('Active fest ID:', festId);
 
-      const pdfBytes = await generateTicketPDF(ticketDetails);
-      const filePath = path.join(__dirname, 'public', 'tickets', `${ticketDetails.ticketId}.pdf`);
+      // Insert the fest ticket with the fest_id
+      await connection.execute(
+        'INSERT INTO fest_ticket (ticket_id, amount, currency, customer_email, sender_id, fest_id) VALUES (?, ?, ?, ?, ?, ?)',
+        [receiptDetails.receiptId, receiptDetails.amount, receiptDetails.currency, receiptDetails.customerEmail, receiptDetails.senderId, festId]
+      );
+
+      const pdfBytes = await generateTicketPDF(receiptDetails);
+      const filePath = path.join(__dirname, 'public', 'tickets', `${receiptDetails.receiptId}.pdf`);
       fs.writeFileSync(filePath, pdfBytes);
 
       sendWhatsAppMessage({
@@ -415,16 +505,19 @@ async function handlePaymentSuccess(sessionId, senderId) {
         to: senderId,
         type: "document",
         document: {
-          link: `${TICKET_URL}${ticketDetails.ticketId}.pdf`,
+          link: `${TICKET_URL}${receiptDetails.receiptId}.pdf`,
           caption: 'Here is your ticket.'
         }
       });
     } else if (userStates[senderId].type === 'cafeteria') {
-      const items = userStates[senderId].data.items;
-      await connection.execute('INSERT INTO fest_ticket (ticket_id, amount, currency, customer_email, sender_id) VALUES (?, ?, ?, ?, ?)', [ticketDetails.ticketId, ticketDetails.amount, ticketDetails.currency, ticketDetails.customerEmail, ticketDetails.senderId]);
+      const items = userStates[senderId].data.items.map(item => `${item.name} x ${item.quantity}`).join(', ');
+      await connection.execute(
+        'INSERT INTO cafeteria_receipt (receipt_id, amount, currency, customer_email, sender_id, items_ordered) VALUES (?, ?, ?, ?, ?, ?)',
+        [receiptDetails.receiptId, receiptDetails.amount, receiptDetails.currency, receiptDetails.customerEmail, receiptDetails.senderId, items]
+      );
 
-      const pdfBytes = await generateCafeteriaReceiptPDF(ticketDetails, items);
-      const filePath = path.join(__dirname, 'public', 'tickets', `${ticketDetails.ticketId}.pdf`);
+      const pdfBytes = await generateCafeteriaReceiptPDF(receiptDetails, userStates[senderId].data.items);
+      const filePath = path.join(__dirname, 'public', 'tickets', `${receiptDetails.receiptId}.pdf`);
       fs.writeFileSync(filePath, pdfBytes);
 
       sendWhatsAppMessage({
@@ -432,7 +525,7 @@ async function handlePaymentSuccess(sessionId, senderId) {
         to: senderId,
         type: "document",
         document: {
-          link: `${TICKET_URL}${ticketDetails.ticketId}.pdf`,
+          link: `${TICKET_URL}${receiptDetails.receiptId}.pdf`,
           caption: 'Here is your receipt.'
         }
       });
@@ -448,7 +541,7 @@ async function generateTicketPDF(ticketDetails) {
 
   const { width, height } = page.getSize();
   const fontSize = 18;
-  const text = `Ticket ID: ${ticketDetails.ticketId}\nAmount: ${ticketDetails.amount / 100}\nCustomer Email: ${ticketDetails.customerEmail}`;
+  const text = `Ticket ID: ${ticketDetails.receiptId}\nAmount: ${ticketDetails.amount / 100}\nCustomer Email: ${ticketDetails.customerEmail}`;
 
   const qrCode = await QRCode.toDataURL(JSON.stringify(ticketDetails));
 
@@ -537,7 +630,7 @@ function sendWhatsAppMessage(data) {
 }
 
 // Webhook verification endpoint (GET request)
-app.get('/clg/webhook', (req, res) => {
+app.get('/webhook', (req, res) => {
   console.log('Query parameters:', req.query);
   const VERIFY_TOKEN = "EAAFsUoRPg1QBOzpnPGEpxBDKEw93j35D2V0Qg5C8O58FNQZAxWXWMo0XJZB6ezMoUWY6xNC6AhPGUZCjt0w8AJwuyAfkhjnZAn73tOU88pXhTxAJevtKm1GSGkDFwh5y79N1eX9LWhD3ceZAZBr36MDd1fgAy0m9UfVDIugUDGxcl64vAhpNuj7FkbG36HGJn3RQus1iw92DiNn4w"; // Replace with your verification token
   const mode = req.query['hub.mode'];
@@ -554,10 +647,88 @@ app.get('/clg/webhook', (req, res) => {
 });
 
 // GET endpoint for testing
-app.get('/clg', (req, res) => {
+app.get('/', (req, res) => {
   res.send('Welcome to the Facebook Messenger webhook!');
 });
 
+
+
+// admin panel
+app.post('/api/add-fest', upload.single('fest_image'), (req, res) => {
+  const { fest_name, amount, description, start_date, end_date } = req.body;
+  const fest_image = req.file.filename;  // Filename of uploaded fest image
+
+  // Check if there is any active fest
+  const checkActiveQuery = 'SELECT COUNT(*) AS active_count FROM fest WHERE active = 1';
+  connection.query(checkActiveQuery, (checkError, checkResults) => {
+    if (checkError) {
+      console.error('Error checking active fest:', checkError);
+      return res.status(500).json({ error: 'Failed to check active fest' });
+    }
+    
+    const activeCount = checkResults[0].active_count;
+    if (activeCount > 0) {
+      return res.status(400).json({ error: 'There is already an active fest. Please deactivate it first.' });
+    }
+    
+    // Proceed to insert the new fest as active
+    const insertQuery = `INSERT INTO fest (fest_name, amount, description, start_date, end_date, fest_image, active) VALUES (?, ?, ?, ?, ?, ?, 1)`;
+    const values = [fest_name, amount, description, start_date, end_date, fest_image];
+
+    connection.query(insertQuery, values, (error, results) => {
+      if (error) {
+        console.error('Error adding fest:', error);
+        return res.status(500).json({ error: 'Failed to add fest' });
+      }
+      res.json({ message: 'Fest added successfully' });
+    });
+  });
+});
+
+app.get('/api/fests', (req, res) => {
+  connection.query('SELECT * FROM fest', (error, results) => {
+    if (error) {
+      console.error('Database error:', error);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    res.json(results);
+  });
+});
+
+app.put('/api/deactivate/fests/:festId', (req, res) => {
+  const festId = req.params.festId;
+  
+  // SQL query to update fest with specified festId
+  const sql = 'UPDATE fest SET active = 0 WHERE fest_id = ?';
+
+  // Execute the SQL query
+  connection.query(sql, [festId], (error, results, fields) => {
+    if (error) {
+      console.error('Error deactivating fest:', error);
+      res.status(500).json({ error: 'Error deactivating fest' });
+      return;
+    }
+    console.log(`Fest with fest_id ${festId} deactivated successfully.`);
+    res.json({ message: `Fest with fest_id ${festId} deactivated successfully.` });
+  });
+});
+
+app.get('/api/registrations/:fest_id', async (req, res) => {
+  const festId = req.params.fest_id;
+
+  // SQL query to fetch tickets for a specific fest_id
+  const query = 'SELECT * FROM fest_ticket WHERE fest_id = ?';
+
+  // Execute the query with festId as parameter
+  connection.query(query, [festId], (error, results, fields) => {
+    if (error) {
+      console.error('Error fetching tickets:', error);
+      res.status(500).json({ error: 'Error fetching tickets' });
+      return;
+    }
+    res.json(results); // Send the fetched tickets as JSON response
+  });
+});
 
 
 // Start the server
